@@ -7,7 +7,7 @@ from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
-# Function to extract text from specified table of content pages of uploaded PDF
+# Function to extract text from specified table of content pages of uploaded PDF (Specs)
 def extract_text_from_pdf(file, start_page, end_page):
     document = fitz.open(stream=file, filetype="pdf")
     text = ""
