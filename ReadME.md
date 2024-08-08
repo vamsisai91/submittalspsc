@@ -23,8 +23,8 @@ This Streamlit app allows users to upload a PDF file, input specific details, an
 1. Clone the repository to your local machine:
 
     ```sh
-    git clone https://github.com/yourusername/pdf-section-number-extraction.git
-    cd pdf-section-number-extraction
+    git clone https://github.com/vamsisai91/submittalspsc
+    cd submittalpsc
     ```
 
 2. Create a virtual environment:
