@@ -16,6 +16,7 @@ import requests  # New import to make API requests
 import time
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+from openai import Client
 
 # Load environment variables
 load_dotenv()
@@ -108,11 +109,12 @@ def chunk_text(text):
     chunks = text_splitter.split_text(text)
     return chunks
 
+client = Client()
 # Function to get embeddings from OpenAI
 def get_embeddings(text_list):
     embeddings = []
     for text in text_list:
-        response = openai.Embedding.create(
+        response = client.embeddings.create(
             input=[text], 
             model="text-embedding-ada-002"
         )
