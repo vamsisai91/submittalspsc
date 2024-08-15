@@ -4,3 +4,5 @@ openai
 openpyxl
 python-docx
 python-dotenv
+faiss-cpu
+langchain

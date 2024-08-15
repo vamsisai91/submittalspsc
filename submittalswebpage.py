@@ -6,6 +6,20 @@ from docx import Document
 from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+import openai
+from dotenv import load_dotenv
+import os
+import faiss
+import numpy as np
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+import requests  # New import to make API requests
+import time
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Load environment variables
+load_dotenv()
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # Function to extract text from specified table of content pages of uploaded PDF (Specs)
 def extract_text_from_pdf(file, start_page, end_page):
@@ -32,7 +46,7 @@ def extract_section_numbers(text, section_pattern=None):
             r'(\b\d{2} \d{2} \d{2}\b|\b\d{6}\b|\b\d{3} \d{3}\b|\b\d{2} \d{4}\b|'
             r'\b\d{5}\b|\b\d{2} \d{3}\b|\b\d{3} \d{2}\b|'
             r'\b\d{4}\b|\b\d{2} \d{2}\b|'
-            r'\b\d{3}\b)', re.MULTILINE)
+            r'\b\d{3} \-)', re.MULTILINE)  # Modified 3-digit pattern
     section_numbers = section_pattern.findall(text)
     seen = set()
     unique_section_numbers = [x for x in section_numbers if not (x in seen or seen.add(x))]
@@ -59,7 +73,7 @@ def extract_section(text, section_heading):
 
 # Function to extract submittals subsection
 def extract_submittals_subsection(text):
-    submittal_types = ["SUBMITTALS", "ACTION SUBMITTALS", "INFORMATION SUBMITTALS", "CLOSEOUT SUBMITTALS"]
+    submittal_types = ["SUBMITTALS", "ACTION SUBMITTALS", "INFORMATIONAL SUBMITTALS", "CLOSEOUT SUBMITTALS", "SHOP DRAWING SUBMITTALS"]
     submittals = []
     for submittal_type in submittal_types:
         pattern = re.compile(rf'({submittal_type}.*?)(?=\n\d+\.\d+|\Z)', re.DOTALL)
@@ -83,6 +97,55 @@ def add_heading_with_page_break(doc, heading_text):
     run.bold = True
     heading.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
 
+# Function to chunk text
+def chunk_text(text):
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200,
+        length_function=len,
+        separators=["\n\n", "\n", " ", ""]
+    )
+    chunks = text_splitter.split_text(text)
+    return chunks
+
+# Function to get embeddings from OpenAI
+def get_embeddings(text_list):
+    embeddings = []
+    for text in text_list:
+        response = openai.Embedding.create(
+            input=[text], 
+            model="text-embedding-ada-002"
+        )
+        embeddings.append(response['data'][0]['embedding'])
+    return np.array(embeddings)
+
+# Function to store chunks and embeddings in FAISS
+def store_embeddings_in_faiss(chunks, embeddings):
+    dimension = len(embeddings[0])
+    index = faiss.IndexFlatL2(dimension)
+    index.add(embeddings)
+    return index, chunks
+
+# Function to query FAISS index and get relevant chunks
+def query_faiss_index(query, index, chunks):
+    query_embedding = get_embeddings([query])[0]
+    D, I = index.search(np.array([query_embedding]), k=5)  # Get top 5 relevant chunks
+    return [chunks[i] for i in I[0]]
+
+# Function to get a response from OpenAI based on relevant text chunks
+def get_openai_response(query, relevant_chunks):
+    context = "\n\n".join(relevant_chunks)
+    prompt = f"Context: {context}\n\nQuery: {query}\n\nResponse:"
+    response = openai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are an assistant that will extract information from a user uploaded pdf"},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=150
+    )
+    return response.choices[0].message.content.strip()
+
 # Streamlit UI Layout
 st.set_page_config(layout="wide")
 st.title("PS Submittals Extraction")
@@ -105,7 +168,7 @@ if 'output_excel_path' not in st.session_state:
 if 'output_path' not in st.session_state:
     st.session_state.output_path = None
 
-st.header("Upload PDF and Provide Inputs about the Project and it's Table of Contents (TOC)")
+st.header("Upload PDF and Provide Inputs about the Project and its Table of Contents (TOC)")
 uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
 project_name = st.text_input("Enter the name of the project:")
 start_page = st.number_input("Enter the starting page number of the TOC:", min_value=1)
@@ -155,6 +218,7 @@ if st.session_state.section_numbers_array and st.session_state.pdf_file:
         section_numbers_array = [number for number in section_numbers_array if number != special_section_number]
 
         # Iterate over each section number, extract the section and then extract the "SUBMITTALS" subsection
+        toc_entries = []
         for section_number in section_numbers_array:
             section_heading = f"SECTION {section_number}"
             extracted_section, section_name = extract_section(pdf_text, section_heading)
@@ -164,6 +228,7 @@ if st.session_state.section_numbers_array and st.session_state.pdf_file:
 
                 if submittals_subsection:
                     all_extracted_content += f"{section_heading} - {section_name}\n{submittals_subsection}\n\n"
+                    toc_entries.append(f"{section_heading} - {section_name}")
 
         # Create an Excel workbook
         wb = Workbook()
@@ -238,11 +303,29 @@ if st.session_state.section_numbers_array and st.session_state.pdf_file:
         st.session_state.output_path = output_path
         st.write(f"All sections and 'SUBMITTALS' subsections extracted and saved to {output_path}")
 
+        # Create a Word document for the TOC
+        toc_doc = Document()
+
+        # Add TOC title
+        toc_title = toc_doc.add_heading('Table of Contents', level=1)
+        toc_title.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
+
+        # Add TOC entries to the TOC document
+        for entry in toc_entries:
+            toc_entry = toc_doc.add_paragraph()
+            toc_entry.add_run(entry)
+
+        # Save the TOC document
+        toc_output_path = f'{project_name}_TOC.docx'
+        toc_doc.save(toc_output_path)
+        st.session_state.toc_output_path = toc_output_path
+        st.write(f"Table of Contents extracted and saved to {toc_output_path}")
+
 # Display download buttons if documents are generated
 if st.session_state.output_excel_path and st.session_state.output_path:
     with open(st.session_state.output_excel_path, "rb") as file:
         st.download_button(
-            label="Download Excel File",
+            label="Download all the Submittals in an Excel File",
             data=file,
             file_name=st.session_state.output_excel_path,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -250,11 +333,81 @@ if st.session_state.output_excel_path and st.session_state.output_path:
 
     with open(st.session_state.output_path, "rb") as file:
         st.download_button(
-            label="Download DOCX File",
+            label="Download all the Submittals in a DOCX File",
             data=file,
             file_name=st.session_state.output_path,
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
+    
+    if 'toc_output_path' in st.session_state:
+        with open(st.session_state.toc_output_path, "rb") as file:
+            st.download_button(
+                label="Download all the Submittals TOC (Submittal Schedule) in a DOCX File",
+                data=file,
+                file_name=st.session_state.toc_output_path,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+
+# Add new sections for comparison
+
+col1, col2 = st.columns(2)
+
+
+with col1:
+    st.header("Chat with JEA's Vol3 Approved Materials list")
+    user_input_manual = st.text_input("You: ", key="user_input_manual")
+    if st.button("Send", key="send_manual"):
+        if user_input_manual:
+            assistant_api_url = "https://api.openai.com/v1/assistants/asst_EZQ9NL71x9QXNrncnzTqZMWv"
+            headers = {
+                "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
+                "OpenAI-Beta": "assistants=v2"
+            }
+            payload = {
+                "messages": [
+                    {"role": "system", "content": """
+                    You are an assistant specialized in extracting information from user-uploaded PDFs. 
+                    You have access to the "Vol3 Approved Materials list" document. 
+                    The document includes various sections related to approved materials, standards, and specifications. 
+                    Please provide detailed and accurate responses based on the user's queries about this document.
+                    """},
+                    {"role": "user", "content": user_input_manual}
+                ]
+            }
+
+            try:
+                response = requests.post(assistant_api_url, headers=headers, json=payload)
+                if response.status_code == 200:
+                    assistant_response = response.json().get("choices", [{}])[0].get("message", {}).get("content", "No response from assistant.")
+                    st.write("OpenAI: ", assistant_response)
+                else:
+                    st.write("Error: ", response.status_code, response.text)
+            except requests.exceptions.RequestException as e:
+                st.write("Connection Error: ", e)
+
+
+with col2:
+    st.header("Upload your Project's Specifications or Standard Manual's here")
+    uploaded_specifications = st.file_uploader("Choose a PDF file", type="pdf", key="specifications")
+    if uploaded_specifications:
+        st.session_state.specifications_text = extract_full_text_from_pdf(uploaded_specifications.read())
+    
+    st.header("Chat with OpenAI about your Project's Specifications/Standard Manual")
+    user_input_specifications = st.text_input("You: ", key="user_input_specifications")
+    if st.button("Send", key="send_specifications"):
+        if user_input_specifications and st.session_state.specifications_text:
+            # Process the specifications
+            specifications_chunks = chunk_text(st.session_state.specifications_text)
+            specifications_embeddings = get_embeddings(specifications_chunks)
+            specifications_index, specifications_stored_chunks = store_embeddings_in_faiss(specifications_chunks, specifications_embeddings)
+            
+            # Query FAISS index
+            relevant_chunks_specifications = query_faiss_index(user_input_specifications, specifications_index, specifications_stored_chunks)
+            
+            # Get OpenAI response based on relevant chunks
+            response_specifications = get_openai_response(user_input_specifications, relevant_chunks_specifications)
+            st.write("OpenAI: ", response_specifications)
+
 
 # Add footer
 st.markdown(
