@@ -20,7 +20,7 @@ from openai import Client
 
 # Load environment variables
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+api_key = os.getenv("OPENAI_API_KEY")
 
 # Function to extract text from specified table of content pages of uploaded PDF (Specs)
 def extract_text_from_pdf(file, start_page, end_page):
@@ -118,7 +118,7 @@ def get_embeddings(text_list):
             input=[text], 
             model="text-embedding-ada-002"
         )
-        embeddings.append(response['data'][0]['embedding'])
+        embeddings.append(response.data[0].embedding)
     return np.array(embeddings)
 
 # Function to store chunks and embeddings in FAISS
@@ -138,7 +138,7 @@ def query_faiss_index(query, index, chunks):
 def get_openai_response(query, relevant_chunks):
     context = "\n\n".join(relevant_chunks)
     prompt = f"Context: {context}\n\nQuery: {query}\n\nResponse:"
-    response = openai.chat.completions.create(
+    response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": "You are an assistant that will extract information from a user uploaded pdf"},
@@ -354,39 +354,29 @@ if st.session_state.output_excel_path and st.session_state.output_path:
 
 col1, col2 = st.columns(2)
 
-
 with col1:
-    st.header("Chat with JEA's Vol3 Approved Materials list")
+    st.header("Chat with JEA's Vol3 Approved Materials List")
     user_input_manual = st.text_input("You: ", key="user_input_manual")
     if st.button("Send", key="send_manual"):
         if user_input_manual:
-            assistant_api_url = "https://api.openai.com/v1/assistants/asst_EZQ9NL71x9QXNrncnzTqZMWv"
+            assistant_api_url = "https://api.openai.com/v1/assistants/asst_EZQ9NL71x9QXNrncnzTqZMWv/requests"
             headers = {
-                "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
-                "OpenAI-Beta": "assistants=v2"
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
             }
             payload = {
-                "messages": [
-                    {"role": "system", "content": """
-                    You are an assistant specialized in extracting information from user-uploaded PDFs. 
-                    You have access to the "Vol3 Approved Materials list" document. 
-                    The document includes various sections related to approved materials, standards, and specifications. 
-                    Please provide detailed and accurate responses based on the user's queries about this document.
-                    """},
-                    {"role": "user", "content": user_input_manual}
-                ]
+                "input": user_input_manual
             }
 
             try:
                 response = requests.post(assistant_api_url, headers=headers, json=payload)
                 if response.status_code == 200:
-                    assistant_response = response.json().get("choices", [{}])[0].get("message", {}).get("content", "No response from assistant.")
-                    st.write("OpenAI: ", assistant_response)
+                    assistant_response = response.json().get("output", "No response from assistant.")
+                    st.write("JEA Standards Chatbot: ", assistant_response)
                 else:
-                    st.write("Error: ", response.status_code, response.text)
+                    st.write(f"Error: {response.status_code} - {response.text}")
             except requests.exceptions.RequestException as e:
-                st.write("Connection Error: ", e)
-
+                st.write(f"Connection Error: {e}")
 
 with col2:
     st.header("Upload your Project's Specifications or Standard Manual's here")
