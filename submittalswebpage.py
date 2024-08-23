@@ -12,11 +12,10 @@ import os
 import faiss
 import numpy as np
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-import requests  # New import to make API requests
+import requests
 import time
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from openai import Client
+from assistant import run_OpenAI_assistant
 
 # Load environment variables
 load_dotenv()
@@ -355,28 +354,33 @@ if st.session_state.output_excel_path and st.session_state.output_path:
 col1, col2 = st.columns(2)
 
 with col1:
-    st.header("Chat with JEA's Vol3 Approved Materials List")
+    st.header("Chat with JEA's Vol3 Approved Materials list")
     user_input_manual = st.text_input("You: ", key="user_input_manual")
-    if st.button("Send", key="send_manual"):
+    if st.button("Chat", key="send_manual"):
         if user_input_manual:
-            assistant_api_url = "https://api.openai.com/v1/assistants/asst_EZQ9NL71x9QXNrncnzTqZMWv/requests"
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "input": user_input_manual
-            }
-
+            assistant_id = "asst_EZQ9NL71x9QXNrncnzTqZMWv"  # Your assistant ID
             try:
-                response = requests.post(assistant_api_url, headers=headers, json=payload)
-                if response.status_code == 200:
-                    assistant_response = response.json().get("output", "No response from assistant.")
-                    st.write("JEA Standards Chatbot: ", assistant_response)
-                else:
-                    st.write(f"Error: {response.status_code} - {response.text}")
-            except requests.exceptions.RequestException as e:
-                st.write(f"Connection Error: {e}")
+                # Call the run_OpenAI_assistant function to get the response
+                assistant_response = run_OpenAI_assistant(
+                    assistant_id=assistant_id,
+                    prompt=user_input_manual,
+                    model='gpt-4o-mini'
+                )
+                
+                # Extract the main text content (assuming it's the first item in the list)
+                response_text = assistant_response[0] if isinstance(assistant_response, list) else assistant_response
+                
+                # Display the response with custom styling
+                st.markdown(
+                    f"""
+                    <div style='background-color: #ffffff; color: #000000; padding: 10px; border-radius: 10px; overflow-wrap: break-word;'>
+                        <p style='color: #000000; font-size: 16px; line-height: 1.5;'>{response_text}</p>
+                    </div>
+                    """, 
+                    unsafe_allow_html=True
+                )
+            except Exception as e:
+                st.write("Error: ", str(e))
 
 with col2:
     st.header("Upload your Project's Specifications or Standard Manual's here")
@@ -386,7 +390,7 @@ with col2:
     
     st.header("Chat with OpenAI about your Project's Specifications/Standard Manual")
     user_input_specifications = st.text_input("You: ", key="user_input_specifications")
-    if st.button("Send", key="send_specifications"):
+    if st.button("Chat", key="send_specifications"):
         if user_input_specifications and st.session_state.specifications_text:
             # Process the specifications
             specifications_chunks = chunk_text(st.session_state.specifications_text)
