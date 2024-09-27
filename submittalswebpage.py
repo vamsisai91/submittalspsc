@@ -16,6 +16,12 @@ import requests
 import time
 from openai import Client
 from assistant import run_OpenAI_assistant
+from pypdf import PdfWriter
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from io import BytesIO
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
 
 # Load environment variables
 load_dotenv()
@@ -46,7 +52,7 @@ def extract_section_numbers(text, section_pattern=None):
             r'(\b\d{2} \d{2} \d{2}\b|\b\d{6}\b|\b\d{3} \d{3}\b|\b\d{2} \d{4}\b|'
             r'\b\d{5}\b|\b\d{2} \d{3}\b|\b\d{3} \d{2}\b|'
             r'\b\d{4}\b|\b\d{2} \d{2}\b|'
-            r'\b\d{3} \-)', re.MULTILINE)  # Modified 3-digit pattern
+            r'\b\d{3} \-)', re.MULTILINE)  
     section_numbers = section_pattern.findall(text)
     seen = set()
     unique_section_numbers = [x for x in section_numbers if not (x in seen or seen.add(x))]
@@ -97,6 +103,40 @@ def add_heading_with_page_break(doc, heading_text):
     run.bold = True
     heading.alignment = WD_PARAGRAPH_ALIGNMENT.CENTER
 
+# Add this function to create PDF
+def create_pdf(project_name, all_extracted_content):
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
+    styles = getSampleStyleSheet()
+    story = []
+
+    # Add project name and title
+    story.append(Paragraph(project_name, styles['Title']))
+    story.append(Paragraph("EXTRACTED SUBMITTALS", styles['Title']))
+    story.append(PageBreak())
+
+    # Use existing styles or create new ones if they don't exist
+    if 'Heading1' not in styles:
+        styles.add(ParagraphStyle(name='Heading1', fontSize=14, spaceAfter=12))
+    if 'BodyText' not in styles:
+        styles.add(ParagraphStyle(name='BodyText', fontSize=10, spaceAfter=6))
+
+    # Process content
+    sections = all_extracted_content.strip().split('\n\n')
+    for section in sections:
+        section_lines = section.split('\n')
+        heading_text = section_lines[0]
+        content = section_lines[1:]
+
+        story.append(Paragraph(heading_text, styles['Heading1']))
+        for line in content:
+            story.append(Paragraph(line, styles['BodyText']))
+        story.append(PageBreak())
+
+    doc.build(story)
+    buffer.seek(0)
+    return buffer
+
 # Function to chunk text
 def chunk_text(text):
     text_splitter = RecursiveCharacterTextSplitter(
@@ -143,15 +183,43 @@ def get_openai_response(query, relevant_chunks):
             {"role": "system", "content": "You are an assistant that will extract information from a user uploaded pdf"},
             {"role": "user", "content": prompt},
         ],
-        max_tokens=150
+        max_tokens=500
     )
     return response.choices[0].message.content.strip()
 
 # Streamlit UI Layout
 st.set_page_config(layout="wide")
-st.title("PS Submittals Extraction")
 
-# Add header image and text
+# Create a container for the header
+header = st.container()
+
+# Inside the container, create three columns
+left_col, middle_col, right_col = header.columns([2, 1, 1])
+
+# Add the title to the left column
+with left_col:
+    st.markdown(
+        """
+        <h1 style='font-size: 48px; margin-bottom: 0; white-space: nowrap;'>PS Submittals Extraction</h1>
+        """,
+        unsafe_allow_html=True
+    )
+
+# Add the video tutorial link to the right column
+with right_col:
+    st.markdown(
+        """
+        <a href="https://www.youtube.com/your_video_link_here" target="_blank" style="text-decoration: none; color: inherit;">
+            <div style="float: right; text-align: center;">
+                <img src="https://img.icons8.com/color/48/000000/youtube-play.png" alt="Video Tutorial">
+                <br>
+                <span style="font-size: 12px;">Video Tutorial</span>
+            </div>
+        </a>
+        """,
+        unsafe_allow_html=True
+    )
+
 st.image("logo.png", width=300)
 st.markdown("<h2 style='text-align: left;'>We Build Life Changing Infrastructure</h2>", unsafe_allow_html=True)
 
@@ -168,6 +236,8 @@ if 'output_excel_path' not in st.session_state:
     st.session_state.output_excel_path = None
 if 'output_path' not in st.session_state:
     st.session_state.output_path = None
+if 'all_extracted_content' not in st.session_state:
+    st.session_state.all_extracted_content = ""
 
 st.header("Upload PDF and Provide Inputs about the Project and its Table of Contents (TOC)")
 uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
@@ -321,6 +391,16 @@ if st.session_state.section_numbers_array and st.session_state.pdf_file:
         toc_doc.save(toc_output_path)
         st.session_state.toc_output_path = toc_output_path
         st.write(f"Table of Contents extracted and saved to {toc_output_path}")
+        
+        st.session_state.all_extracted_content = all_extracted_content
+
+        # Create PDF
+        pdf_buffer = create_pdf(st.session_state.project_name, st.session_state.all_extracted_content)
+        pdf_output_path = f'{st.session_state.project_name}_Extracted_SUBMITTALS_Sections.pdf'
+        with open(pdf_output_path, 'wb') as f:
+            f.write(pdf_buffer.getvalue())
+        st.session_state.pdf_output_path = pdf_output_path
+        st.write(f"All sections and 'SUBMITTALS' subsections extracted and saved to {pdf_output_path}")
 
 # Display download buttons if documents are generated
 if st.session_state.output_excel_path and st.session_state.output_path:
@@ -348,7 +428,14 @@ if st.session_state.output_excel_path and st.session_state.output_path:
                 file_name=st.session_state.toc_output_path,
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             )
-
+if 'pdf_output_path' in st.session_state:
+    with open(st.session_state.pdf_output_path, "rb") as file:
+        st.download_button(
+            label="Download all the Submittals in a PDF File (Chat with OpenAI)",
+            data=file,
+            file_name=st.session_state.pdf_output_path,
+                mime="application/pdf"
+            )
 # Add new sections for comparison
 
 col1, col2 = st.columns(2)
@@ -383,26 +470,37 @@ with col1:
                 st.write("Error: ", str(e))
 
 with col2:
-    st.header("Upload your Project's Specifications or Standard Manual's here")
+    st.header("Upload the Extracted Submittal/Project's Specifications/Standard Manual's here")
     uploaded_specifications = st.file_uploader("Choose a PDF file", type="pdf", key="specifications")
-    if uploaded_specifications:
-        st.session_state.specifications_text = extract_full_text_from_pdf(uploaded_specifications.read())
     
-    st.header("Chat with OpenAI about your Project's Specifications/Standard Manual")
-    user_input_specifications = st.text_input("You: ", key="user_input_specifications")
-    if st.button("Chat", key="send_specifications"):
-        if user_input_specifications and st.session_state.specifications_text:
-            # Process the specifications
+    if uploaded_specifications:
+        # Compute embeddings only if they haven't been computed yet
+        if 'specifications_embeddings' not in st.session_state:
+            st.session_state.specifications_text = extract_full_text_from_pdf(uploaded_specifications.read())
             specifications_chunks = chunk_text(st.session_state.specifications_text)
             specifications_embeddings = get_embeddings(specifications_chunks)
-            specifications_index, specifications_stored_chunks = store_embeddings_in_faiss(specifications_chunks, specifications_embeddings)
-            
-            # Query FAISS index
-            relevant_chunks_specifications = query_faiss_index(user_input_specifications, specifications_index, specifications_stored_chunks)
+            st.session_state.specifications_index, st.session_state.specifications_stored_chunks = store_embeddings_in_faiss(specifications_chunks, specifications_embeddings)
+            st.session_state.specifications_embeddings = specifications_embeddings  # Store embeddings to prevent recomputation
+            st.success("Specifications uploaded and embeddings computed successfully.")
+        else:
+            st.success("Specifications embeddings are already computed.")
+    
+    st.header("Chat with your Uploaded Document")
+    user_input_specifications = st.text_input("You: ", key="user_input_specifications")
+    if st.button("Chat", key="send_specifications"):
+        if user_input_specifications and 'specifications_index' in st.session_state:
+            # Query FAISS index using the stored embeddings and index
+            relevant_chunks_specifications = query_faiss_index(
+                user_input_specifications,
+                st.session_state.specifications_index,
+                st.session_state.specifications_stored_chunks
+            )
             
             # Get OpenAI response based on relevant chunks
             response_specifications = get_openai_response(user_input_specifications, relevant_chunks_specifications)
             st.write("OpenAI: ", response_specifications)
+        else:
+            st.warning("Please upload a pdf document first.")
 
 
 # Add footer
