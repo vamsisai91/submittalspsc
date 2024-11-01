@@ -209,7 +209,7 @@ with left_col:
 with right_col:
     st.markdown(
         """
-        <a href="https://www.youtube.com/your_video_link_here" target="_blank" style="text-decoration: none; color: inherit;">
+        <a href="https://youtu.be/AQSR5KJ51SY" target="_blank" style="text-decoration: none; color: inherit;">
             <div style="float: right; text-align: center;">
                 <img src="https://img.icons8.com/color/48/000000/youtube-play.png" alt="Video Tutorial">
                 <br>
